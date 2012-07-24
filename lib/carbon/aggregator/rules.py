@@ -80,8 +80,10 @@ class AggregationRule:
     self.cache = {}
 
   def get_aggregate_metric(self, metric_path):
-    if metric_path in self.cache:
+    try:
       return self.cache[metric_path]
+    except:
+      pass
 
     match = self.regex.match(metric_path)
     result = None
