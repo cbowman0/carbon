@@ -80,11 +80,9 @@ class MetricCache(dict):
       return
 
     t = time.time()
-    self.lock.acquire()
-    try:
-      metric_queue_sizes = [ (metric, len(datapoints)) for metric,datapoints in self.items() ]
-    finally:
-      self.lock.release()
+
+    metric_queue_keys = self.keys()
+    metric_queue_sizes = [ (metric, len(self.get(metric, {}))) for metric in metric_queue_keys ]
 
     micros = int((time.time() - t) * 1000000)
     log.msg("Generated %d cache queues in %d microseconds" %
