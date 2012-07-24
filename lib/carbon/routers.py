@@ -47,6 +47,7 @@ class ConsistentHashingRouter(DatapointRouter):
     self.replication_factor = int(replication_factor)
     self.instance_ports = {} # { (server, instance) : port }
     self.ring = ConsistentHashRing([])
+    self.ring_cache = {}
 
   def addDestination(self, destination):
     (server, port, instance) = destination
@@ -66,9 +67,13 @@ class ConsistentHashingRouter(DatapointRouter):
     key = self.getKey(metric)
 
     if (self.replication_factor == 1):
-      (server, instance) = self.ring.get_node(key)
-      port = self.instance_ports[ (server, instance) ]
-      yield (server, port, instance)
+      if key in self.ring_cache:
+        yield self.ring_cache[key]
+      else:
+        (server, instance) = self.ring.get_node(key)
+        port = self.instance_ports[ (server, instance) ]
+        self.ring_cache[key] = (server, port, instance)
+        yield (server, port, instance)
       return
 
     used_servers = set()
