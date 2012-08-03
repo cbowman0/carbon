@@ -23,29 +23,31 @@ class FilterProcessor(Processor):
 
   def process(self, metric, datapoint):
     t = time.time()
-    for metric_filter in FilterRuleManager.filters:
-      if metric_filter.action == 'allow':
-        if metric_filter.matches(metric):
-          instrumentation.increment('filter.datapoints_passed_include')
-          duration_micros = (time.time() - t) * ONE_MILLION
-          instrumentation.append('pipeline.filter_microseconds', duration_micros)
-          yield (metric, datapoint)
-          return
-      elif metric_filter.action == 'exclude':
-        if metric_filter.matches(metric):
-          instrumentation.increment('filter.datapoints_filtered')
-          duration_micros = (time.time() - t) * ONE_MILLION
-          instrumentation.append('pipeline.filter_microseconds', duration_micros)
-          return
-    instrumentation.increment('filter.datapoints_passed_default')
-    duration_micros = (time.time() - t) * ONE_MILLION
-    instrumentation.append('pipeline.filter_microseconds', duration_micros)
-    yield (metric, datapoint)
-    return
+    for filter in FilterRuleManager.include_filters:
+      if filter.search(metric):
+        instrumentation.increment('filter.datapoints_passed_include')
+        duration_micros = (time.time() - t) * ONE_MILLION
+        instrumentation.append('pipeline.filter_microseconds', duration_micros)
+        yield (metric, datapoint)
+        return
+
+    for filter in FilterRuleManager.exclude_filters:
+      if filter.search(metric):
+        instrumentation.increment('filter.datapoints_filtered')
+        duration_micros = (time.time() - t) * ONE_MILLION
+        instrumentation.append('pipeline.filter_microseconds', duration_micros)
+        break
+    else:
+      instrumentation.increment('filter.datapoints_passed_default')
+      duration_micros = (time.time() - t) * ONE_MILLION
+      instrumentation.append('pipeline.filter_microseconds', duration_micros)
+      yield (metric, datapoint)
+      return
 
 class FilterRuleManager:
   def __init__(self):
-    self.filters = []
+    self.include_filters = []
+    self.exclude_filters = []
     self.filters_file = None
     self.read_task = LoopingCall(self.read_filters)
     self.filters_last_read = 0.0
@@ -85,7 +87,11 @@ class FilterRuleManager:
     log.filter("reading new filter rules from %s" % self.filters_file)
     filters = self.read_filters_from_file(self.filters_file)
 
-    self.filters = filters
+    include_filters = [f for f in filters['include']]
+    exclude_filters = [f for f in filters['exclude']]
+
+    self.include_filters = [ re.compile('|'.join(include_filters)) ]
+    self.exclude_filters = [ re.compile('|'.join(exclude_filters)) ]
     self.filters_last_read = mtime
 
 # Importable singleton
