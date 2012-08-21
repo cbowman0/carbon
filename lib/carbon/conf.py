@@ -79,6 +79,7 @@ defaults = dict(
   RELAY_METHOD='rules',
   REPLICATION_FACTOR=1,
   USE_FLOW_CONTROL=True,
+  KEYFUNC='',
 
   # writer.conf
   MAX_CACHE_SIZE=2000000,
@@ -522,6 +523,13 @@ def read_relay_configs():
     raise ConfigError("relay.conf DESTINATIONS cannot be empty")
 
   settings['DESTINATIONS'] = util.parseDestinations(relay_settings['DESTINATIONS'])
+
+  if relay_settings['KEYFUNC']:
+    settings['KEYFUNC'] = relay_settings['KEYFUNC']
+
+  #XXX Need to set this so that when cache.py is imported it doesn't cause
+  #      an error trying to utilize settings.CACHE_SIZE_LOW_WATERMARK
+  settings['CACHE_SIZE_LOW_WATERMARK'] = settings.MAX_CACHE_SIZE * 0.95
 
 
 def _process_alive(pid):

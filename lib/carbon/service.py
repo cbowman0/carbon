@@ -123,6 +123,8 @@ def setupRelayProcessor(root_service, settings):
 
     if settings.RELAY_METHOD == 'consistent-hashing':
         router = ConsistentHashingRouter(settings.REPLICATION_FACTOR)
+        if settings.KEYFUNC:
+          router.setKeyFunctionFromModule(settings.KEYFUNC)
     elif settings.RELAY_METHOD == 'relay-rules':
         router = RelayRulesRouter()
 
