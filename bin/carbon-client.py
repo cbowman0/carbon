@@ -245,7 +245,7 @@ else:
     pid_f = open(options.pidfile, 'w')
     pid_f.write(str(os.getpid()) + "\n")
     pid_f.close()
-  lc = LoopingCall(fl.loadMetricsFile)
+  lc = LoopingCall(fl.loadDataFile)
   lc.start(0)
 
 exitCode = 0
