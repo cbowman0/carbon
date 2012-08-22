@@ -17,7 +17,8 @@ import sys
 import imp
 from os.path import dirname, join, abspath, exists, split
 from optparse import OptionParser
-import os, time
+import os, time, MySQLdb, urllib
+import datetime
 
 # Figure out where we're installed
 BIN_DIR = dirname(abspath(__file__))
@@ -47,10 +48,13 @@ from carbon import log, events
 
 option_parser = OptionParser(usage="%prog [options] <host:port:instance> <host:port:instance> ...")
 option_parser.add_option('--debug', action='store_true', help="Log debug info to stdout")
+option_parser.add_option('--process-events', action='store_true',
+  help="Process logs as containing events instead of metrics. Make sure to provide correct --datafile-prefix option.")
 option_parser.add_option('--keyfunc', help="Use a custom key function (path/to/module.py:myFunc)")
-option_parser.add_option('--datadir', help="Directory containing files to load", default=None)
-option_parser.add_option('--datafile-prefix', help="Load files which start with this prefix, ignore the rest", default='')
 option_parser.add_option('--pidfile', help="Create a pidfile upon launch", default=None)
+option_parser.add_option('--datadir', help="Directory containing files to load", default=None)
+option_parser.add_option('--graphite-dir', help="Graphite web-app directory containing local_settings.py", default='/opt/graphite/webapp/graphite')
+option_parser.add_option('--datafile-prefix', help="Load files which start with this prefix, ignore the rest", default='')
 option_parser.add_option('--replication', type='int', default=1, help='Replication factor')
 option_parser.add_option('--routing', default='consistent-hashing',
   help='Routing method: "consistent-hashing" (default) or "relay"')
@@ -59,7 +63,7 @@ option_parser.add_option('--relayrules', default=default_relayrules,
 
 options, args = option_parser.parse_args()
 
-if not args:
+if not (options.process_events or args):
   print 'At least one host:port destination required\n'
   option_parser.print_usage()
   raise SystemExit(1)
@@ -159,6 +163,7 @@ class FileLoader(object):
     lines_to_reinject = self.lines_to_reinject
     self.lines_to_reinject = []
     for line in lines_to_reinject:
+#      log.msg('Injecting failed line "%s"' % line)
       self.sendDatapoint(line)
     self.sleep_for -= 1
     return False
@@ -237,15 +242,85 @@ class FileLoader(object):
   def sendDatapoint(self, *args, **kwargs):
     raise TypeError, "sendDatapoint is an abstract method"
 
+
+class EventStorage(object):
+  def __init__(self, graphite_dir):
+    sys.path.append(graphite_dir)
+    print graphite_dir
+    import local_settings
+    self.graphite_settings = local_settings
+    self._dbh = None
+
+  @property
+  def dbc(self):
+    if self._dbh is None:
+      db = MySQLdb.connect(
+        user=self.graphite_settings.DATABASE_USER,
+        db=self.graphite_settings.DATABASE_NAME,
+        passwd=self.graphite_settings.DATABASE_PASSWORD,
+        host=self.graphite_settings.DATABASE_HOST)
+      db.autocommit(True)
+      self._dbh = db
+    return self._dbh.cursor()
+
+  def disconnect_mysql(self):
+    self._dbh = None
+
+  def store_event(self, timestamp, path, data):
+    def run_query():
+      self.dbc.execute("INSERT INTO events_event (`when`, `what`, `data`, `tags`) VALUES (%s, %s, %s, '')",
+                      (datetime.datetime.fromtimestamp(int(timestamp)), path, data))
+    try:
+      run_query()
+    except MySQLdb.OperationalError:
+      self.disconnect_mysql()
+      run_query()
+    except ValueError:
+      log.msg("Failed to add an event: incorrect syntax")
+
+
+class MetricsLoader(FileLoader):
+  def sendDatapoint(self, line):
+    try:
+      (metric, value, timestamp) = line.strip().split("\t")
+      metric = metric.strip().replace(' ', '_')
+      datapoint = (float(timestamp), float(value))
+      if not client_manager.sendDatapoint(metric, datapoint):
+        if len(self.lines_to_reinject) > 20:
+          self.backoff(4)
+          log.msg("Failed to send datapoints: backing off and retrying, current metric:%s" %  metric)
+        self.lines_to_reinject.append(line)
+    except:
+      log.err(None, 'Dropping invalid line: %s' % line)
+
+
+class EventsLoader(FileLoader):
+  """Load events from the log file having format:
+  <timestamp>\\t<metric path>\\t<data>
+  and pushing it at events_event MySQL table (Events app)
+  """
+  def __init__(self, datadir, graphite_dir, datafile_prefix=''):
+    super(self.__class__, self).__init__(datadir, datafile_prefix)
+    self.eventStorage = EventStorage(graphite_dir)
+
+  def sendDatapoint(self, line):
+    (path, timestamp, data) = line.split('\t')
+    data = urllib.unquote(data)
+    self.eventStorage.store_event(timestamp.strip(), path.strip(), data.strip())
+
+
 if options.datadir is None:
   stdio.StandardIO( StdinMetricsReader() )
 else:
-  fl = FileLoader(options.datadir, options.datafile_prefix)
+  if options.process_events:
+    loader = EventsLoader(options.datadir, options.graphite_dir, options.datafile_prefix)
+  else:
+    loader = MetricsLoader(options.datadir, options.datafile_prefix)
   if options.pidfile is not None:
     pid_f = open(options.pidfile, 'w')
     pid_f.write(str(os.getpid()) + "\n")
     pid_f.close()
-  lc = LoopingCall(fl.loadDataFile)
+  lc = LoopingCall(loader.loadDataFile)
   lc.start(0)
 
 exitCode = 0
