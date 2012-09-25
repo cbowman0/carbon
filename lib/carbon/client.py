@@ -107,6 +107,7 @@ class CarbonClientFactory(ReconnectingClientFactory):
     self.attemptedRelays = 'destinations.%s.attempted_relays' % self.destinationName
     self.fullQueueDrops = 'destinations.%s.full_queue_drops' % self.destinationName
     self.queuedUntilConnected = 'destinations.%s.queued_until_connected' % self.destinationName
+    self.MAX_QUEUE_SIZE = settings.MAX_QUEUE_SIZE
 
   def queueFullCallback(self, result):
     log.clients('%s send queue is full (%d datapoints)' % (self, result))
@@ -157,15 +158,17 @@ class CarbonClientFactory(ReconnectingClientFactory):
   def sendDatapoint(self, metric, datapoint):
     instrumentation.increment(self.attemptedRelays)
     queueSize = self.queueSize
-    if queueSize >= settings.MAX_QUEUE_SIZE:
+    if queueSize >= self.MAX_QUEUE_SIZE:
       if not self.queueFull.called:
         self.queueFull.callback(queueSize)
       instrumentation.increment(self.fullQueueDrops)
+      return False
     elif self.connectedProtocol:
       self.connectedProtocol.sendDatapoint(metric, datapoint)
     else:
       self.enqueue(metric, datapoint)
       instrumentation.increment(self.queuedUntilConnected)
+    return True
 
   def startedConnecting(self, connector):
     log.clients("%s::startedConnecting (%s:%d)" % (self, connector.host, connector.port))
@@ -256,8 +259,12 @@ class CarbonClientManager(Service):
     return DeferredList(deferreds)
 
   def sendDatapoint(self, metric, datapoint):
+    rc = True
     for destination in self.router.getDestinations(metric):
-      self.client_factories[destination].sendDatapoint(metric, datapoint)
+      status = self.client_factories[destination].sendDatapoint(metric, datapoint)
+      rc = rc and status
+    return rc
+
 
   def __str__(self):
     return "<%s[%x]>" % (self.__class__.__name__, id(self))
