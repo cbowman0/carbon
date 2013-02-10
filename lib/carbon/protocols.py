@@ -170,7 +170,7 @@ class MetricFileLoader(MetricReceiver):
 
       self.current_file.close()
       try:
-        log.msg("Done with %s" % fname)
+        log.listener("Done with %s" % fname)
         os.remove(self.current_file.name)
         self.releaseLock(self.current_file.name)
         self.current_file = None
