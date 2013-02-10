@@ -6,6 +6,10 @@ from twisted.protocols.basic import LineOnlyReceiver, Int32StringReceiver
 from carbon import log, events, state
 from carbon.conf import settings
 from carbon.util import pickle, get_unpickler
+# For file loader
+import os, time
+from twisted.internet import defer
+from twisted.internet.task import deferLater
 
 
 class MetricReceiver:
@@ -94,6 +98,87 @@ class MetricPickleReceiver(MetricReceiver, Int32StringReceiver):
     for (metric, datapoint) in datapoints:
       #Expect proper types since it is coming in pickled.
       self.metricReceived(metric, datapoint)
+
+class MetricFileLoader(MetricReceiver):
+  def __init__(self, datadir, datafile_prefix=''):
+    self.filelist = []
+    self.datadir = datadir
+    self.datafile_prefix = datafile_prefix
+    self.current_file = None
+    self.sleep_for = 0
+    self.lines_to_reinject = []
+
+  def _sleep(self, secs):
+    return deferLater(reactor, secs, lambda : None)
+
+  @defer.inlineCallbacks
+  def getNextFile(self):
+    if len(self.filelist) == 0:
+      self.filelist = [f for f in os.listdir(self.datadir) if (os.path.splitext(f)[1] == '.log') and f.startswith(self.datafile_prefix) ][0:100]
+
+    if len(self.filelist) > 0:
+      log.listener("Working on %d files" % len(self.filelist))
+      defer.returnValue(os.path.join(self.datadir, self.filelist.pop()))
+    else:
+      log.listener("No files found.  Sleeping 3...")
+      yield deferLater(reactor, 3, lambda: None) 
+
+  def acquireLock(self, file):
+    try:
+      os.link(file, "%s.lock" % file)
+    except:
+      return False
+    else:
+      return True
+
+  def releaseLock(self, file):
+    try:
+      os.remove("%s.lock" % file)
+    except:
+      return False
+    else:
+      return True
+
+  @defer.inlineCallbacks
+  def loadDataFile(self):
+    try:
+      if self.current_file is None:
+        fname = yield self.getNextFile()
+        if fname is None:
+          return
+        if os.path.splitext(fname)[1] != '.log':
+          return
+        log.listener("Attempting to lock %s" % fname)
+        if self.acquireLock(fname):
+          log.listener("Feeding %s" % fname)
+          try:
+            self.current_file = open(fname)
+          except:
+            return
+        else:
+          return
+      while True:
+        line = self.current_file.readline()
+        if not line:
+          break
+        try:
+          metric, value, timestamp = line.strip().split()
+          datapoint = ( float(timestamp), float(value) )
+          self.metricReceived(metric, datapoint)
+        except:
+          log.listener('invalid line received from client %s, ignoring' % self.peerName)
+
+      self.current_file.close()
+      try:
+        log.msg("Done with %s" % fname)
+        os.remove(self.current_file.name)
+        self.releaseLock(self.current_file.name)
+        self.current_file = None
+      except OSError:
+        self.current_file = None
+        pass
+    except IndexError:
+      log.debug("No data")
 
 
 class CacheManagementHandler(Int32StringReceiver):
