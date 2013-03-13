@@ -105,23 +105,17 @@ class MetricFileLoader(MetricReceiver):
     self.datadir = datadir
     self.datafile_prefix = datafile_prefix
     self.current_file = None
-    self.sleep_for = 0
-    self.lines_to_reinject = []
+    self.paused = False
+    self.data = None
+
+  def pauseReceiving(self):
+    self.paused = True
+
+  def resumeReceiving(self):
+    self.paused = False
 
   def _sleep(self, secs):
     return deferLater(reactor, secs, lambda : None)
-
-  @defer.inlineCallbacks
-  def getNextFile(self):
-    if len(self.filelist) == 0:
-      self.filelist = [f for f in os.listdir(self.datadir) if (os.path.splitext(f)[1] == '.log') and f.startswith(self.datafile_prefix) ][0:100]
-
-    if len(self.filelist) > 0:
-      log.listener("Working on %d files" % len(self.filelist))
-      defer.returnValue(os.path.join(self.datadir, self.filelist.pop()))
-    else:
-      log.listener("No files found.  Sleeping 3...")
-      yield deferLater(reactor, 3, lambda: None) 
 
   def acquireLock(self, file):
     try:
@@ -139,46 +133,70 @@ class MetricFileLoader(MetricReceiver):
     else:
       return True
 
+  def _sleep(self, secs):
+    return deferLater(reactor, secs, lambda : None)
+
+  @defer.inlineCallbacks
+  def getNextFile(self):
+    if self.current_file is not None:
+      log.listener("File already set.  Sleeping 1.")
+      yield deferLater(reactor, 1, lambda: None)
+      return
+
+    if len(self.filelist) < 5:
+      self.filelist = [f for f in os.listdir(self.datadir) if (os.path.splitext(f)[1] == '.log') and f.startswith(self.datafile_prefix) ][0:100]
+
+    while self.current_file is None and len(self.filelist) > 0:
+      log.listener("Working on %d files" % len(self.filelist))
+      file = os.path.join(self.datadir, self.filelist.pop())
+      if self.acquireLock(file):
+        log.listener("Feeding %s" % file)
+        self.current_file = open(file)
+
+    #XXX This logic sucks.
+    #  Need to handle the case where there are more files, but we didn't get a lock on the list we had.
+    if not self.current_file:
+      log.listener("No available files found.  Sleeping 3...")
+      yield deferLater(reactor, 3, lambda: None)        
+
+  def get_lines(self, num):
+    lines = []
+    for n in range(0,num):
+      line = self.current_file.readline()
+      if line:
+        lines.append(line)
+      else:
+        log.listener("Done with %s" % self.current_file.name)
+        self.current_file.close()
+        try:
+          os.remove(self.current_file.name)
+          self.releaseLock(self.current_file.name)
+        except OSError:
+          pass
+        self.current_file = None
+        break
+    return lines
+
   @defer.inlineCallbacks
   def loadDataFile(self):
-    try:
-      if self.current_file is None:
-        fname = yield self.getNextFile()
-        if fname is None:
-          return
-        if os.path.splitext(fname)[1] != '.log':
-          return
-        log.listener("Attempting to lock %s" % fname)
-        if self.acquireLock(fname):
-          log.listener("Feeding %s" % fname)
-          try:
-            self.current_file = open(fname)
-          except:
-            return
-        else:
-          return
-      while True:
-        line = self.current_file.readline()
-        if not line:
-          break
-        try:
-          metric, value, timestamp = line.strip().split()
-          datapoint = ( float(timestamp), float(value) )
-          self.metricReceived(metric, datapoint)
-        except:
-          log.listener('invalid line received from client %s, ignoring' % self.peerName)
+    if self.paused:
+      return
 
-      self.current_file.close()
+    if not self.current_file:
+      yield self.getNextFile()
+      return
+
+    # Parameterize this
+    lines = self.get_lines(60000)
+    for line in lines:
       try:
-        log.listener("Done with %s" % fname)
-        os.remove(self.current_file.name)
-        self.releaseLock(self.current_file.name)
-        self.current_file = None
-      except OSError:
-        self.current_file = None
-        pass
-    except IndexError:
-      log.debug("No data")
+        metric, value, timestamp = line.strip().split()
+        datapoint = ( float(timestamp), float(value) )
+        self.metricReceived(metric, datapoint)
+      except:
+        log.listener('invalid line: %s, ignoring' % line)
+    return
+
 
 
 class CacheManagementHandler(Int32StringReceiver):
