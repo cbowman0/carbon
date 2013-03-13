@@ -31,11 +31,13 @@ class CarbonClientProtocol(Int32StringReceiver):
     self.connected = False
 
   def pauseProducing(self):
-    self.paused = True
+    if settings.USE_FLOW_CONTROL:
+      self.paused = True
 
   def resumeProducing(self):
-    self.paused = False
-    self.sendQueued()
+    if settings.USE_FLOW_CONTROL:
+      self.paused = False
+      self.sendQueued()
 
   def stopProducing(self):
     self.disconnect()
