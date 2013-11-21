@@ -85,7 +85,7 @@ class CarbonClientProtocol(Int32StringReceiver):
     minutes, which seems more realistic.
     """
     chained_invocation_delay = 0.0001
-    chained_invocation_delay_no_queue = chained_invocation_delay * 1000
+    chained_invocation_delay_no_queue = chained_invocation_delay * 10
     queueSize = self.factory.queueSize
 
 
