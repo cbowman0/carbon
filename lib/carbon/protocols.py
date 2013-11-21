@@ -166,7 +166,7 @@ class MetricFileLoader(MetricReceiver):
       if line:
         lines.append(line)
       else:
-        log.listener("Done reading %s" % self.current_file.name)
+        log.listener("Done with %s" % self.current_file.name)
         self.current_file.close()
         try:
           os.remove(self.current_file.name)
@@ -187,7 +187,7 @@ class MetricFileLoader(MetricReceiver):
       return
 
     # Parameterize this
-    lines = self.get_lines(1000)
+    lines = self.get_lines(60000)
     for line in lines:
       try:
         metric, value, timestamp = line.strip().split()
