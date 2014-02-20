@@ -125,7 +125,6 @@ class MetricFileLoader(MetricReceiver):
   def watchDirCallback(self, watch, path, mask):
     self.lookForFiles = True
 
-  @defer.inlineCallbacks
   def getNextFile(self):
     if self.current_file is not None:
       return
@@ -142,7 +141,7 @@ class MetricFileLoader(MetricReceiver):
       log.listener("Working on %d potential files" % len(self.filelist))
       file = os.path.join(self.datadir, self.filelist.pop())
       try:
-        yield os.rename(file, "%s.%s" % (file, self.pid))
+         os.rename(file, "%s.%s" % (file, self.pid))
       except:
          pass
       file += ".%s" % self.pid
@@ -150,7 +149,6 @@ class MetricFileLoader(MetricReceiver):
         log.listener("Feeding %s" % file)
         try:
           self.current_file = open(file)
-          yield self.current_file
         except:
           log.listener("Failed to open locked file %s" % file)
           self.current_file = None
@@ -181,7 +179,7 @@ class MetricFileLoader(MetricReceiver):
         try:
           os.remove(self.current_file.name)
         except OSError:
-          pass
+          log.listener("Failed to remove file %s.  This should never happen." % self.current_file.name)
         self.current_file = None
         break
     self.lookForFiles = True
@@ -193,12 +191,12 @@ class MetricFileLoader(MetricReceiver):
       self.consumeCurrentFile()
 
     if self.current_file is None and self.lookForFiles:
-      yield self.getNextFile()
+      self.getNextFile()
 
-    # If the current iteration didn't find a file, then sleep a second
+    # If the current iteration didn't find a file, then sleep 3 seconds
     if self.current_file is None:
       log.listener("No current file found.  Sleeping.")
-      yield deferLater(reactor, 1, lambda : None)
+      yield deferLater(reactor, 3, lambda : None)
 
     return
 
