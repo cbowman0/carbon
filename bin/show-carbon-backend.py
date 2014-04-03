@@ -73,7 +73,7 @@ def configure_router(config):
 def list_logs(log_file_path):
     for l in listdir(log_file_path):
         if splitext(l)[-1] == '.log':
-            yield abspath(join(path, l))
+            yield abspath(join(log_file_path, l))
 
 def list_metric_lines(log_file):
     f = open(log_file)
