@@ -250,6 +250,7 @@ class CarbonClientFactory(ReconnectingClientFactory):
       if not self.queueFull.called:
         self.queueFull.callback(self.queueSize)
       instrumentation.increment(self.fullQueueDrops)
+      return False
     else:
       self.enqueue(metric, datapoint)
 
@@ -257,6 +258,7 @@ class CarbonClientFactory(ReconnectingClientFactory):
       reactor.callLater(settings.TIME_TO_DEFER_SENDING, self.connectedProtocol.sendQueued)
     else:
       instrumentation.increment(self.queuedUntilConnected)
+    return True
 
   def sendHighPriorityDatapoint(self, metric, datapoint):
     """The high priority datapoint is one relating to the carbon
@@ -366,8 +368,11 @@ class CarbonClientManager(Service):
     return DeferredList(deferreds)
 
   def sendDatapoint(self, metric, datapoint):
+    ret = True
     for destination in self.router.getDestinations(metric):
-      self.client_factories[destination].sendDatapoint(metric, datapoint)
+      status = self.client_factories[destination].sendDatapoint(metric, datapoint)
+      ret = ret and status
+    return ret
 
   def sendHighPriorityDatapoint(self, metric, datapoint):
     for destination in self.router.getDestinations(metric):
