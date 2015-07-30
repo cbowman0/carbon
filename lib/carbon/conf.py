@@ -32,6 +32,7 @@ from twisted.python import usage
 LISTENER_TYPES = (
   'plaintext-receiver',
   'pickle-receiver',
+  'file-loader',
 )
 
 defaults = dict(
@@ -442,10 +443,17 @@ def read_configs(instance, options):
 
   # Apply listener defaults
   for listener in settings['LISTENERS']:
-    listener['port'] = int(listener['port'])
+    if 'port' in listener:
+      listener['port'] = int(listener['port'])
     listener.setdefault('interface', '0.0.0.0')
     listener.setdefault('protocol', 'tcp')
-    if listener['protocol'] not in ('tcp', 'udp'):
+    if listener['type'] == 'file-loader':
+       listener['protocol'] = 'file'
+       if 'datadir' not in listener:
+         raise ConfigError("datadir must be defined with file-loader listener")
+       if 'datafile_prefix' not in listener:
+         listener['datafile_prefix'] = ''
+    if listener['protocol'] not in ('tcp', 'udp', 'file'):
       raise ConfigError("Invalid protocol \"%s\"" % listener['protocol'])
     if listener['type'] not in LISTENER_TYPES:
       raise ConfigError("Invalid listener type \"%s\"" % listener['type'])

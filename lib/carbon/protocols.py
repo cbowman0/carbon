@@ -1,10 +1,12 @@
-import time
+import os, time
 import traceback
 
-from twisted.internet import reactor
+from twisted.internet import defer, inotify, reactor
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet.error import ConnectionDone
+from twisted.internet.task import deferLater
 from twisted.protocols.basic import LineOnlyReceiver, Int32StringReceiver
+from twisted.python import filepath
 from carbon import log, events, state
 from carbon.conf import settings
 from carbon.util import pickle, get_unpickler
@@ -103,6 +105,106 @@ class MetricPickleReceiver(MetricReceiver, Int32StringReceiver):
     for (metric, datapoint) in datapoints:
       #Expect proper types since it is coming in pickled.
       self.metricReceived(metric, datapoint)
+
+class MetricFileLoader(MetricReceiver):
+  def __init__(self, datadir, datafile_prefix=''):
+    self.notifier = inotify.INotify()
+    self.filelist = []
+    self.datadir = datadir
+    self.datafile_prefix = datafile_prefix
+    self.current_file = None
+    self.pid = os.getpid()
+    self.paused = False
+    self.data = None
+    self.lookForFiles = True
+
+    self.notifier.startReading()
+    checkMask = inotify.IN_ISDIR | inotify.IN_CREATE
+    self.notifier.watch(filepath.FilePath(self.datadir), mask=checkMask, callbacks=[self.watchDirCallback])
+
+  def pauseReceiving(self):
+    self.paused = True
+
+  def resumeReceiving(self):
+    self.paused = False
+
+  def watchDirCallback(self, watch, path, mask):
+    self.lookForFiles = True
+
+  def getNextFile(self):
+    if self.current_file is not None:
+      return
+
+    if self.paused:
+      return
+
+    log.listener("In getNextFile")
+    if len(self.filelist) < 5:
+      log.listener("Refreshing low file list")
+      self.filelist = [f for f in os.listdir(self.datadir) if (os.path.splitext(f)[1] == '.log') and f.startswith(self.datafile_prefix) ][0:100]
+
+    while self.current_file is None and len(self.filelist) > 0:
+      log.listener("Working on %d potential files" % len(self.filelist))
+      file = os.path.join(self.datadir, self.filelist.pop())
+      try:
+         os.rename(file, "%s.%s" % (file, self.pid))
+      except:
+         pass
+      file += ".%s" % self.pid
+      if os.path.isfile(file):
+        log.listener("Feeding %s" % file)
+        try:
+          self.current_file = open(file)
+        except:
+          log.listener("Failed to open locked file %s" % file)
+          self.current_file = None
+
+      # repopulate list if we fell all the way through without obtaining a file to work on.
+      if len(self.filelist) == 0:
+        log.listener("Refreshing empty file list")
+        self.filelist = [f for f in os.listdir(self.datadir) if (os.path.splitext(f)[1] == '.log') and f.startswith(self.datafile_prefix) ][0:100]
+
+    # if no file was obtained, then mark the lookForFiles as false so we wait for a new file to exist.
+    if self.current_file is None:
+      self.lookForFiles = False
+
+
+  def consumeCurrentFile(self):
+    while True:
+      line = self.current_file.readline()
+      if line:
+        try:
+          metric, value, timestamp = line.strip().split()
+          datapoint = ( float(timestamp), float(value) )
+          self.metricReceived(metric, datapoint)
+        except:
+          log.listener('invalid line: %s, ignoring' % line)
+      else:
+        log.listener("Done with %s" % self.current_file.name)
+        self.current_file.close()
+        try:
+          os.remove(self.current_file.name)
+        except OSError:
+          log.listener("Failed to remove file %s.  This should never happen." % self.current_file.name)
+        self.current_file = None
+        break
+    self.lookForFiles = True
+    return
+
+  @defer.inlineCallbacks
+  def loadDataFile(self):
+    if self.current_file is not None:
+      self.consumeCurrentFile()
+
+    if self.current_file is None and self.lookForFiles:
+      self.getNextFile()
+
+    # If the current iteration didn't find a file, then sleep 3 seconds
+    if self.current_file is None:
+      log.listener("No current file found.  Sleeping.")
+      yield deferLater(reactor, 3, lambda : None)
+
+    return
 
 
 class CacheManagementHandler(Int32StringReceiver):

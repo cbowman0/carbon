@@ -44,8 +44,8 @@ def createDaemonService(options):
   settings['INSTANCE'] = options['instance']
 
   setupPipeline(root_service, settings)
-  setupReceivers(root_service, settings)
   setupInstrumentation(root_service, settings)
+  setupReceivers(root_service, settings)
   return root_service
 
 
@@ -156,11 +156,12 @@ def setupWriterProcessor(root_service, settings):
 
 def setupReceivers(root_service, settings):
   from carbon.protocols import (MetricLineReceiver, MetricPickleReceiver,
-                                MetricDatagramReceiver)
+                                MetricDatagramReceiver, MetricFileLoader)
 
   receiver_protocols = {
     'plaintext-receiver': MetricLineReceiver,
     'pickle-receiver': MetricPickleReceiver,
+    'file-loader' : MetricFileLoader,
   }
 
   if settings.ENABLE_AMQP:
@@ -183,16 +184,22 @@ def setupReceivers(root_service, settings):
     service.setServiceParent(root_service)
 
   for listener in settings.LISTENERS:
-    port = listener['port']
-    interface = listener['interface']
-    if listener['protocol'] == 'tcp':
-      factory = ServerFactory()
-      factory.protocol = receiver_protocols[listener['type']]
-      service = TCPServer(port, factory, interface=interface)
-    elif listener['protocol'] == 'udp':
-      service = UDPServer(port, MetricDatagramReceiver(), interface=interface)
+    if listener['protocol'] == 'file':
+      from twisted.internet.task import LoopingCall
+      loader = MetricFileLoader(listener['datadir'], listener['datafile_prefix'])
+      lc = LoopingCall(loader.loadDataFile)
+      lc.start(0)
+    else:
+      port = listener['port']
+      interface = listener['interface']
+      if listener['protocol'] == 'tcp':
+        factory = ServerFactory()
+        factory.protocol = receiver_protocols[listener['type']]
+        service = TCPServer(port, factory, interface=interface)
+      elif listener['protocol'] == 'udp':
+        service = UDPServer(port, MetricDatagramReceiver(), interface=interface)
 
-    service.setServiceParent(root_service)
+      service.setServiceParent(root_service)
 
   if settings.ENABLE_MANHOLE:
     from carbon import manhole
